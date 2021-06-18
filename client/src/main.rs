@@ -174,7 +174,6 @@ async fn main() {
                 );
             }
 
-            player.shooting = is_key_down(KeyCode::LeftControl);
             if player.shooting {
                 if player.facing_right {
                     bullet_emitter.config.initial_direction = vec2(1.0, 0.0);
@@ -228,8 +227,10 @@ async fn main() {
             }
         }
 
-        // player movement control
+        // player input
         {
+            player.shooting = is_key_down(KeyCode::LeftControl);
+
             let pos = world.actor_pos(player.collider);
             let on_ground = world.collide_check(player.collider, pos + vec2(0., 1.));
 
