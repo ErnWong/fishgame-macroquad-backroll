@@ -4,12 +4,11 @@ use macroquad_particles as particles;
 use macroquad_profiler as profiler;
 use macroquad_tiled as tiled;
 
-use physics_platformer::*;
+use macroquad_platformer::*;
 
 use macroquad::telemetry;
 
 use particles::Emitter;
-use quad_net::client::QuadSocket;
 
 struct Player {
     collider: Actor,
@@ -35,58 +34,12 @@ async fn main() {
         Emitter::new(nanoserde::DeJson::deserialize_json(SHOOTING_FX).unwrap());
     bullet_emitter.config.emitting = false;
 
-    // hack for local testing
-    // will spawn a local tcp/websocket server from the first client runned
-    // second client will got panic from server thread, but this is fine, we need just one server for local tests
-    // #[cfg(not(target_arch = "wasm32"))]
-    // {
-    //     use std::thread;
-
-    //     thread::spawn(|| {
-    //         server::tcp_main().unwrap();
-    //     });
-    //     thread::sleep(std::time::Duration::from_millis(100));
-    // }
-    // let _tcp_ip = "0.0.0.0:8090";
-    // let _ws_ip = "ws://0.0.0.0:8091";
-
-    let _tcp_ip = "173.0.157.169:8090";
-    let _ws_ip = "ws://173.0.157.169:8091";
-
-    #[cfg(not(target_arch = "wasm32"))]
-    let mut socket = QuadSocket::connect(_tcp_ip).unwrap();
-    #[cfg(target_arch = "wasm32")]
-    let mut socket = QuadSocket::connect(_ws_ip).unwrap();
-
-    #[cfg(target_arch = "wasm32")]
-    {
-        while socket.is_wasm_websocket_connected() == false {
-            next_frame().await;
-        }
-    }
-
-    socket.send_bin(&shared::Handshake {
-        magic: shared::MAGIC,
-        version: shared::PROTOCOL_VERSION,
-    });
-
-    let message = shared::Message::SpawnRequest;
-    socket.send_bin(&message);
-    let id = loop {
-        if let Some(message) = socket.try_recv() {
-            let message = nanoserde::DeBin::deserialize_bin(&message).unwrap();
-            match message {
-                shared::Message::Spawned(id) => break id,
-                _ => panic!("Expected Messag::Spawned"),
-            }
-        }
-        next_frame().await;
-    };
+    todo!("Wait until spawn and everyone is ready");
 
     info!("Spawned with id {}", id);
 
-    let tileset = load_texture("client/assets/tileset.png").await;
-    set_texture_filter(tileset, FilterMode::Nearest);
+    let tileset = load_texture("client/assets/tileset.png").await.unwrap();
+    tileset.set_filter(FilterMode::Nearest);
 
     let tiled_map_json = load_string("client/assets/map.json").await.unwrap();
     let tiled_map = tiled::load_map(&tiled_map_json, &[("tileset.png", tileset)], &[]).unwrap();
@@ -96,14 +49,12 @@ async fn main() {
         static_colliders.push(tile.is_some());
     }
 
-    socket.send_bin(&shared::Message::Move(0, 0));
-
     let mut world = World::new();
     world.add_static_tiled_layer(static_colliders, 8., 8., 40, 1);
 
     let spawner_pos = {
         let objects = &tiled_map.layers["logic"].objects;
-        let macroquad_tiled::Object::Rect {
+        let macroquad_tiled::Object {
             world_x, world_y, ..
         } = objects[rand::gen_range(0, objects.len()) as usize];
 
@@ -124,27 +75,13 @@ async fn main() {
         telemetry::begin_zone("Main loop");
 
         telemetry::begin_zone("network");
-        if true {
-            let pos = world.actor_pos(player.collider);
-            let x = pos.x as u16
-                + ((player.facing_right as u16) << 14)
-                + ((player.shooting as u16) << 15);
-            socket.send_bin(&shared::Message::Move(x, pos.y as u8));
-        }
-
-        while let Some(msg) = socket.try_recv_bin() {
-            players = match msg {
-                shared::Message::Players(players) => players,
-                _ => panic!(),
-            };
-        }
-
+        todo!("TODO: adapt to GGPO networking");
         telemetry::end_zone();
 
         telemetry::begin_zone("draw world");
         clear_background(BLACK);
 
-        set_camera(camera);
+        set_camera(&camera);
 
         for _ in 0..1 {
             tiled_map.draw_tiles("main layer", Rect::new(0.0, 0.0, 320.0, 152.0), None);

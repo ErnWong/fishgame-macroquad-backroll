@@ -1,8 +1,8 @@
 [workspace]
-members = ["client", "server", "shared"]
+members = ["client"]
 
 [patch.crates-io]
-macroquad = { git = "https://github.com/not-fl3/macroquad.git" }
+#macroquad = { git = "https://github.com/not-fl3/macroquad.git" }
 
 #[patch.'https://github.com/not-fl3/macroquad.git']
 #macroquad = { path = "../macroquad" }
