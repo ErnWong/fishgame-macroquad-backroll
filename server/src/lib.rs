@@ -1,136 +1,138 @@
+use macroquad::prelude::*;
+use macroquad_tiled as tiled;
+
+use ::rand::seq::SliceRandom;
 use nanoserde::DeBin;
-use std::sync::{Arc, Mutex};
+use std::cell::Cell;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use shared::Message;
-
-use quad_net::server::SocketHandle;
-
-struct World {
-    players: Vec<Option<(u16, u8)>>,
-    unique_id: usize,
+struct Player {
+    port: u16,
+    x: u16,
+    y: u8,
 }
 
-#[derive(Debug)]
-enum ClientState {
-    Unknown,
-    Connected,
-    Spawned { id: usize },
+#[derive(Default)]
+struct Lobby {
+    players: Vec<Option<Player>>,
+    started: bool,
 }
 
-impl Default for ClientState {
-    fn default() -> ClientState {
-        ClientState::Unknown
+impl Lobby {
+    pub fn new() -> Self {
+        Self::default()
     }
 }
 
-fn handle_message(
-    out: &mut SocketHandle,
-    state: &mut ClientState,
-    msg: Vec<u8>,
-    world: &Arc<Mutex<World>>,
-) -> Option<()> {
-    match state {
-        ClientState::Unknown => {
-            let handshake: shared::Handshake = DeBin::deserialize_bin(&msg).ok()?;
-            if handshake.magic != shared::MAGIC {
-                println!("Magic mismatch, not fishgame protocol!");
-                return None;
-            }
-            if handshake.version != shared::PROTOCOL_VERSION {
-                println!("Version mismatch, outdataed client!");
-                return None;
-            }
-            *state = ClientState::Connected;
-        }
-        ClientState::Connected => {
-            let msg: Message = DeBin::deserialize_bin(&msg).ok()?;
-            match msg {
-                Message::SpawnRequest => {
-                    let id = world.lock().unwrap().unique_id;
-                    world.lock().unwrap().players.push(Some((0, 0)));
-                    world.lock().unwrap().unique_id += 1;
-
-                    *state = ClientState::Spawned { id };
-                    out.send_bin(&Message::Spawned(id)).ok()?;
-                }
-                _ => {
-                    return None;
-                }
-            }
-        }
-        ClientState::Spawned { id } => {
-            let msg: Message = DeBin::deserialize_bin(&msg).ok()?;
-            match msg {
-                Message::Move(x, y) => {
-                    world.lock().unwrap().players[*id] = Some((x, y));
-                }
-                _ => {
-                    return None;
-                }
-            }
-        }
-    }
-
-    Some(())
+#[derive(Default)]
+struct ClientState {
+    index: usize,
+    started: Cell<bool>,
+    lobby: Arc<RwLock<Lobby>>,
 }
 
-pub fn tcp_main() -> std::io::Result<()> {
-    let world = Arc::new(Mutex::new(World {
-        players: vec![],
-        unique_id: 0,
-    }));
+#[derive(Default)]
+struct CurrentLobby {
+    lobby: Arc<RwLock<Lobby>>,
+}
 
-    quad_net::server::listen(
-        "0.0.0.0:8090",
-        "0.0.0.0:8091",
-        quad_net::server::Settings {
-            on_message: {
-                let world = world.clone();
-                move |mut out, state: &mut ClientState, msg| {
-                    if handle_message(&mut out, state, msg, &world).is_none() {
-                        out.disconnect();
-                    }
-                }
-            },
-            on_timer: {
-                let world = world.clone();
-                move |out, state| match state {
-                    ClientState::Spawned { id } => {
-                        if out
-                            .send_bin(&Message::Players(
-                                // remove self and remove dead players
-                                world
-                                    .lock()
-                                    .unwrap()
+impl CurrentLobby {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+pub async fn lobby_main() {
+    let current_lobby = Arc::new(RwLock::new(CurrentLobby::new()));
+
+    let tileset = load_texture("client/assets/tileset.png").await.unwrap();
+    tileset.set_filter(FilterMode::Nearest);
+    let tiled_map_json = load_string("client/assets/map.json").await.unwrap();
+    let tiled_map = tiled::load_map(&tiled_map_json, &[("tileset.png", tileset)], &[]).unwrap();
+    let spawners = &tiled_map.layers["logic"].objects;
+    let spawner_positions: RwLock<Vec<Vec2>> = RwLock::new(
+        spawners
+            .iter()
+            .map(|spawner| vec2(spawner.world_x, spawner.world_y))
+            .collect(),
+    );
+
+    {
+        let current_lobby = current_lobby.clone();
+        std::thread::spawn(move || {
+            quad_net::quad_socket::server::listen(
+                "0.0.0.0:8090",
+                "0.0.0.0:8091",
+                quad_net::quad_socket::server::Settings {
+                    on_message: {
+                        let current_lobby = current_lobby.clone();
+                        move |mut _out, state: &mut ClientState, msg| {
+                            let shared::Join(port) = DeBin::deserialize_bin(&msg).unwrap();
+                            let spawner_positions = spawner_positions.read().unwrap();
+                            let spawn_position =
+                                spawner_positions.choose(&mut ::rand::thread_rng()).unwrap();
+                            let player = Player {
+                                port,
+                                x: spawn_position.x as u16,
+                                y: spawn_position.y as u8,
+                            };
+                            let lobby = &current_lobby.read().unwrap().lobby;
+                            let mut lobby_write = lobby.write().unwrap();
+                            state.index = lobby_write.players.len();
+                            state.lobby = lobby.clone();
+                            lobby_write.players.push(Some(player));
+                            info!(
+                                "Player {} joined the lobby (from port: {})",
+                                state.index, port
+                            );
+                        }
+                    },
+                    on_timer: {
+                        move |out, state| {
+                            let lobby_read = state.lobby.read().unwrap();
+                            if lobby_read.started {
+                                info!("Player {} starting", state.index);
+                                let players = lobby_read
                                     .players
                                     .iter()
-                                    .enumerate()
-                                    .filter(|(n, _)| n != id)
-                                    .filter_map(|(_, player)| *player)
-                                    .collect(),
-                            ))
-                            .is_err()
-                        {
-                            out.disconnect();
+                                    .filter_map(|possible_player| {
+                                        possible_player
+                                            .as_ref()
+                                            .map(|player| (player.port, (player.x, player.y)))
+                                    })
+                                    .collect();
+                                out.send_bin(&shared::Start(players)).unwrap();
+                                state.started.set(true);
+                                out.disconnect();
+                            }
                         }
-                    }
-                    _ => {}
-                }
-            },
-            on_disconnect: {
-                let world = world.clone();
+                    },
+                    on_disconnect: {
+                        move |state| {
+                            if !state.started.get() {
+                                info!("Player {} left the lobby", state.index);
+                                state.lobby.write().unwrap().players[state.index] = None;
+                            }
+                        }
+                    },
+                    timer: Some(Duration::from_millis(1000 / 30)),
+                    _marker: std::marker::PhantomData,
+                },
+            );
+        });
+    }
 
-                move |state| match state {
-                    ClientState::Spawned { id } => {
-                        world.lock().unwrap().players[*id] = None;
-                    }
-                    _ => {}
-                }
-            },
-            timer: Some(Duration::from_millis(1000 / 30)),
-            _marker: std::marker::PhantomData,
-        },
-    );
-    Ok(())
+    loop {
+        if is_key_pressed(KeyCode::Enter) {
+            info!("Starting game...");
+            let lobby = &mut current_lobby.write().unwrap().lobby;
+            {
+                let mut lobby_write = lobby.write().unwrap();
+                lobby_write.started = true;
+            }
+            *lobby = Arc::new(RwLock::new(Lobby::new()));
+        }
+        next_frame().await;
+    }
 }

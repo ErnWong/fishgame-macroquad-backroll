@@ -1,3 +1,4 @@
-pub fn main() -> std::io::Result<()> {
-    server::tcp_main()
+#[macroquad::main("Fish Lobby")]
+async fn main() {
+    server::lobby_main().await;
 }

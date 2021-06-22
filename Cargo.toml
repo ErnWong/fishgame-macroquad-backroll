@@ -1,5 +1,5 @@
 [workspace]
-members = ["client"]
+members = ["client", "shared", "server"]
 
 [patch.crates-io]
 #macroquad = { git = "https://github.com/not-fl3/macroquad.git" }
