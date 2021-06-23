@@ -95,6 +95,7 @@ const SHOOTING_FX: &str = r#"
 "#;
 
 struct Game {
+    _connection_manager: UdpManager,
     session: P2PSession<BackrollConfig>,
     local_player: BackrollPlayerHandle,
     world: World,
@@ -113,6 +114,7 @@ impl Game {
             P2PSession<BackrollConfig>,
             BackrollPlayerHandle,
             Vec<Player>,
+            UdpManager,
         ) {
             let task_pool = TaskPool::new();
 
@@ -160,7 +162,7 @@ impl Game {
                         })
                     }
                     let session = builder.start(task_pool).unwrap();
-                    break (session, local_player.unwrap(), players);
+                    break (session, local_player.unwrap(), players, connection_manager);
                 }
                 next_frame().await;
             }
@@ -185,10 +187,11 @@ impl Game {
 
         let camera = Camera2D::from_display_rect(Rect::new(0.0, 0.0, 320.0, 152.0));
 
-        let (session, local_player, players) =
+        let (session, local_player, players, connection_manager) =
             connect("0.0.0.0:8090".parse().unwrap(), &mut world).await;
 
         Self {
+            _connection_manager: connection_manager,
             session,
             local_player,
             bullet_emitter,
