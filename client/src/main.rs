@@ -6,7 +6,8 @@ use macroquad_tiled as tiled;
 
 use backroll::{
     command::{Command, Commands},
-    Event, P2PSession, Player as BackrollPlayer, PlayerHandle as BackrollPlayerHandle,
+    BackrollError, Event, P2PSession, Player as BackrollPlayer,
+    PlayerHandle as BackrollPlayerHandle,
 };
 use backroll_transport_udp::{UdpConnectionConfig, UdpManager};
 use bevy_tasks::TaskPool;
@@ -211,13 +212,22 @@ impl Game {
 
         if self.session.is_synchronized() {
             telemetry::begin_zone("local input");
-            self.session
+            match self
+                .session
                 .add_local_input(self.local_player, Input::current())
-                .expect("Inputs should be added at the right time");
-            telemetry::end_zone();
-
-            telemetry::begin_zone("advance frame");
-            self.run_commands(self.session.advance_frame());
+            {
+                Ok(()) => {
+                    telemetry::begin_zone("advance frame");
+                    self.run_commands(self.session.advance_frame());
+                    telemetry::end_zone();
+                }
+                Err(BackrollError::ReachedPredictionBarrier) => {
+                    warn!("Prediction barrier reached. Stalling.");
+                }
+                Err(err) => {
+                    panic!("Error in adding local input: ({:?}) {}", err, err);
+                }
+            }
             telemetry::end_zone();
 
             self.draw();
