@@ -234,9 +234,9 @@ impl Game {
                 }
             }
             telemetry::end_zone();
-
-            self.draw();
         }
+
+        self.draw();
 
         //profiler::profiler(profiler::ProfilerParams {
         //    fps_counter_pos: vec2(50.0, 20.0),
