@@ -314,6 +314,7 @@ impl Game {
                                 }
                             }
                             player.prev_jump_down = player_input.contains(Input::JUMP);
+                            player.shooting = player_input.contains(Input::SHOOT);
                         }
 
                         if player.speed.x < 0.0 {
