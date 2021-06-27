@@ -104,6 +104,7 @@ struct Game {
     tiled_map: tiled::Map,
     bullet_emitter: Emitter,
     players: Vec<Player>,
+    frames_to_stall: u8,
 }
 
 impl Game {
@@ -200,6 +201,7 @@ impl Game {
             world,
             camera,
             players,
+            frames_to_stall: 0,
         }
     }
 
@@ -210,7 +212,9 @@ impl Game {
         self.run_commands(self.session.poll());
         telemetry::end_zone();
 
-        if self.session.is_synchronized() {
+        if self.frames_to_stall > 0 {
+            self.frames_to_stall -= 1;
+        } else if self.session.is_synchronized() {
             telemetry::begin_zone("local input");
             match self
                 .session
@@ -357,6 +361,7 @@ impl Game {
                 }
                 Command::Event(Event::TimeSync { frames_ahead }) => {
                     debug!("Received stall request: {}", frames_ahead);
+                    self.frames_to_stall = frames_ahead;
                 }
                 Command::Event(Event::ConnectionInterrupted {
                     player,
