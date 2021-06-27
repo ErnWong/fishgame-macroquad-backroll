@@ -456,6 +456,8 @@ async fn main() {
     let mut game = Game::new().await;
 
     loop {
+        // TODO: Run update() enough times to emulate a fixed timestep loop, or do some fancy
+        // multithreading.
         game.update().await;
     }
 }
