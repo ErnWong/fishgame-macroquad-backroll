@@ -120,7 +120,7 @@ impl Game {
 
             let local_port = portpicker::pick_unused_port()
                 .expect("Ran out of available ports to make connections with");
-            let local_addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), local_port);
+            let local_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), local_port);
             info!("Local addr: {:?}", local_addr);
             let connection_manager = UdpManager::bind(task_pool.clone(), local_addr).unwrap();
 
@@ -144,7 +144,7 @@ impl Game {
                             local_player = Some(backroll_player_handle);
                             backroll_player_handle
                         } else {
-                            let remote_addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), port);
+                            let remote_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), port);
                             info!("Adding remote player with addr {:?}", remote_addr);
                             let remote_peer = connection_manager
                                 .connect(UdpConnectionConfig::unbounded(remote_addr));
