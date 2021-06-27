@@ -21,6 +21,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 
 mod consts {
     use super::{Input, KeyCode};
+    pub const TIMESTEP: f32 = 1.0 / 60.0;
     pub const GRAVITY: f32 = 900.0;
     pub const JUMP_SPEED: f32 = 250.0;
     pub const RUN_SPEED: f32 = 150.0;
@@ -325,14 +326,14 @@ impl Game {
                         }
 
                         if on_ground == false {
-                            player.speed.y += consts::GRAVITY * get_frame_time();
+                            player.speed.y += consts::GRAVITY * consts::TIMESTEP;
                         }
 
                         self.world
-                            .move_h(player.collider, player.speed.x * get_frame_time());
+                            .move_h(player.collider, player.speed.x * consts::TIMESTEP);
                         if !self
                             .world
-                            .move_v(player.collider, player.speed.y * get_frame_time())
+                            .move_v(player.collider, player.speed.y * consts::TIMESTEP)
                         {
                             player.speed.y = 0.0;
                         }
