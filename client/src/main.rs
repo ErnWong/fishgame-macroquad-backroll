@@ -337,6 +337,12 @@ impl Game {
                         {
                             player.speed.y = 0.0;
                         }
+
+                        // HACK: clear the position remainders that are not saved in the backroll state.
+                        self.world.set_actor_position(
+                            player.collider,
+                            self.world.actor_pos(player.collider),
+                        );
                     }
                 }
                 Command::Event(Event::Connected(player_handle)) => {
