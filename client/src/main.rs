@@ -13,9 +13,9 @@ use backroll_transport_udp::{UdpConnectionConfig, UdpManager};
 use bevy_tasks::TaskPool;
 use bytemuck::{Pod, Zeroable};
 use macroquad::telemetry;
-use macroquad_platformer::*;
+use macroquad_platformer::{Actor, World as CollisionWorld};
 use ordered_float::OrderedFloat;
-use particles::Emitter;
+use particles::EmittersCache;
 use quad_net::quad_socket::client::QuadSocket;
 use std::net::{Ipv4Addr, SocketAddr};
 
@@ -26,6 +26,8 @@ mod consts {
     pub const JUMP_SPEED: f32 = 250.0;
     pub const RUN_SPEED: f32 = 150.0;
     pub const PLAYER_SPRITE: u32 = 120;
+    pub const BULLET_SPEED: f32 = 300.0;
+    pub const BULLET_INTERVAL_TICKS: u32 = 10;
     pub const INPUT_MAP: [(Input, KeyCode); 4] = [
         (Input::SHOOT, KeyCode::A),
         (Input::LEFT, KeyCode::Left),
@@ -43,7 +45,15 @@ struct Player {
     speed: Vec2,
     prev_jump_down: bool,
     facing_right: bool,
-    shooting: bool,
+    health: i32,
+    gun_clock: u32,
+}
+
+struct Bullet {
+    pos: Vec2,
+    speed: Vec2,
+    lived: f32,
+    lifetime: f32,
 }
 
 bitflags! {
@@ -77,12 +87,24 @@ struct PlayerState {
     vy: OrderedFloat<f32>,
     prev_jump_down: bool,
     facing_right: bool,
-    shooting: bool,
+    health: i32,
+    gun_clock: u32,
+}
+
+#[derive(Clone, Hash)]
+struct BulletState {
+    x: OrderedFloat<f32>,
+    y: OrderedFloat<f32>,
+    vx: OrderedFloat<f32>,
+    vy: OrderedFloat<f32>,
+    lived: OrderedFloat<f32>,
+    lifetime: OrderedFloat<f32>,
 }
 
 #[derive(Clone, Hash)]
 struct State {
     pub players: Vec<PlayerState>,
+    pub bullets: Vec<BulletState>,
 }
 
 struct BackrollConfig;
@@ -92,19 +114,19 @@ impl backroll::Config for BackrollConfig {
     type State = State;
 }
 
-const SHOOTING_FX: &str = r#"
-{"local_coords":false,"emission_shape":{"Sphere":{"radius":1}},"one_shot":false,"lifetime":0.4,"lifetime_randomness":0.2,"explosiveness":0,"amount":27,"shape":{"Circle":{"subdivisions":20}},"emitting":true,"initial_direction":{"x":1,"y":0},"initial_direction_spread":0.1,"initial_velocity":337.3,"initial_velocity_randomness":0.3,"linear_accel":0,"size":3.3,"size_randomness":0,"size_curve":{"points":[[0,0.44000006],[0.22,0.72],[0.46,0.84296143],[0.7,1.1229614],[1,0]],"interpolation":{"Linear":[]},"resolution":30},"blend_mode":{"Additive":[]},"colors_curve":{"start":{"r":0.89240015,"g":0.97,"b":0,"a":1},"mid":{"r":1,"g":0.11639989,"b":0.059999943,"a":1},"end":{"r":0.1500001,"g":0.03149999,"b":0,"a":1}},"gravity":{"x":0,"y":0},"post_processing":{}}
+pub const EXPLOSION_FX: &'static str = r#"{"local_coords":false,"emission_shape":{"Point":[]},"one_shot":true,"lifetime":0.15,"lifetime_randomness":0,"explosiveness":0.65,"amount":41,"shape":{"Circle":{"subdivisions":10}},"emitting":false,"initial_direction":{"x":0,"y":-1},"initial_direction_spread":6.2831855,"initial_velocity":30,"initial_velocity_randomness":0.2,"linear_accel":0,"size":1.5000002,"size_randomness":0.4,"blend_mode":{"Alpha":[]},"colors_curve":{"start":{"r":0.8200004,"g":1,"b":0.31818175,"a":1},"mid":{"r":0.71000004,"g":0.36210018,"b":0,"a":1},"end":{"r":0.02,"g":0,"b":0.000000007152557,"a":1}},"gravity":{"x":0,"y":0},"post_processing":{}}
 "#;
 
 struct Game {
     _connection_manager: UdpManager,
     session: P2PSession<BackrollConfig>,
     local_player: BackrollPlayerHandle,
-    world: World,
+    explosions: EmittersCache,
+    collision_world: CollisionWorld,
     camera: Camera2D,
     tiled_map: tiled::Map,
-    bullet_emitter: Emitter,
     players: Vec<Player>,
+    bullets: Vec<Bullet>,
     frames_to_stall: u8,
 }
 
@@ -112,7 +134,7 @@ impl Game {
     async fn new() -> Self {
         async fn connect(
             server_addr: SocketAddr,
-            world: &mut World,
+            collision_world: &mut CollisionWorld,
         ) -> (
             P2PSession<BackrollConfig>,
             BackrollPlayerHandle,
@@ -157,11 +179,12 @@ impl Game {
                         };
                         players.push(Player {
                             backroll_player_handle,
-                            collider: world.add_actor(vec2(x as f32, y as f32), 8, 8),
+                            collider: collision_world.add_actor(vec2(x as f32, y as f32), 8, 8),
                             speed: vec2(0., 0.),
                             prev_jump_down: false,
                             facing_right: true,
-                            shooting: false,
+                            health: 100,
+                            gun_clock: 0,
                         })
                     }
                     let session = builder.start(task_pool).unwrap();
@@ -170,9 +193,8 @@ impl Game {
                 next_frame().await;
             }
         }
-        let mut bullet_emitter =
-            Emitter::new(nanoserde::DeJson::deserialize_json(SHOOTING_FX).unwrap());
-        bullet_emitter.config.emitting = false;
+        let explosions =
+            EmittersCache::new(nanoserde::DeJson::deserialize_json(EXPLOSION_FX).unwrap());
 
         let tileset = load_texture("client/assets/tileset.png").await.unwrap();
         tileset.set_filter(FilterMode::Nearest);
@@ -185,23 +207,24 @@ impl Game {
             static_colliders.push(tile.is_some());
         }
 
-        let mut world = World::new();
-        world.add_static_tiled_layer(static_colliders, 8., 8., 40, 1);
+        let mut collision_world = CollisionWorld::new();
+        collision_world.add_static_tiled_layer(static_colliders, 8., 8., 40, 1);
 
         let camera = Camera2D::from_display_rect(Rect::new(0.0, 0.0, 320.0, 152.0));
 
         let (session, local_player, players, connection_manager) =
-            connect("0.0.0.0:8090".parse().unwrap(), &mut world).await;
+            connect("0.0.0.0:8090".parse().unwrap(), &mut collision_world).await;
 
         Self {
             _connection_manager: connection_manager,
             session,
             local_player,
-            bullet_emitter,
+            explosions,
             tiled_map,
-            world,
+            collision_world,
             camera,
             players,
+            bullets: vec![],
             frames_to_stall: 0,
         }
     }
@@ -256,7 +279,7 @@ impl Game {
                             .players
                             .iter()
                             .map(|player| {
-                                let pos = self.world.actor_pos(player.collider);
+                                let pos = self.collision_world.actor_pos(player.collider);
                                 PlayerState {
                                     x: OrderedFloat(pos.x),
                                     y: OrderedFloat(pos.y),
@@ -264,18 +287,28 @@ impl Game {
                                     vy: OrderedFloat(player.speed.y),
                                     prev_jump_down: player.prev_jump_down,
                                     facing_right: player.facing_right,
-                                    shooting: player.shooting,
+                                    health: player.health,
+                                    gun_clock: player.gun_clock,
                                 }
+                            })
+                            .collect(),
+                        bullets: self
+                            .bullets
+                            .iter()
+                            .map(|bullet| BulletState {
+                                x: OrderedFloat(bullet.pos.x),
+                                y: OrderedFloat(bullet.pos.y),
+                                vx: OrderedFloat(bullet.speed.x),
+                                vy: OrderedFloat(bullet.speed.y),
+                                lived: OrderedFloat(bullet.lived),
+                                lifetime: OrderedFloat(bullet.lifetime),
                             })
                             .collect(),
                     });
                 }
                 Command::Load(load_state) => {
-                    for (player_state, player) in load_state
-                        .load()
-                        .players
-                        .iter()
-                        .zip(self.players.iter_mut())
+                    let state = load_state.load();
+                    for (player_state, player) in state.players.iter().zip(self.players.iter_mut())
                     {
                         *player = Player {
                             backroll_player_handle: player.backroll_player_handle,
@@ -283,19 +316,29 @@ impl Game {
                             speed: Vec2::new(player_state.vx.0, player_state.vy.0),
                             prev_jump_down: player_state.prev_jump_down,
                             facing_right: player_state.facing_right,
-                            shooting: player_state.shooting,
+                            health: player_state.health,
+                            gun_clock: player_state.gun_clock,
                         };
-                        self.world.set_actor_position(
+                        self.collision_world.set_actor_position(
                             player.collider,
                             Vec2::new(player_state.x.0, player_state.y.0),
                         );
                     }
+                    for (bullet_state, bullet) in state.bullets.iter().zip(self.bullets.iter_mut())
+                    {
+                        *bullet = Bullet {
+                            pos: vec2(bullet_state.x.0, bullet_state.y.0),
+                            speed: vec2(bullet_state.vx.0, bullet_state.vy.0),
+                            lived: bullet_state.lived.0,
+                            lifetime: bullet_state.lifetime.0,
+                        }
+                    }
                 }
                 Command::AdvanceFrame(input) => {
                     for player in &mut self.players {
-                        let pos = self.world.actor_pos(player.collider);
+                        let pos = self.collision_world.actor_pos(player.collider);
                         let on_ground = self
-                            .world
+                            .collision_world
                             .collide_check(player.collider, pos + vec2(0., 1.));
                         {
                             let player_input = input
@@ -315,7 +358,25 @@ impl Game {
                                 }
                             }
                             player.prev_jump_down = player_input.contains(Input::JUMP);
-                            player.shooting = player_input.contains(Input::SHOOT);
+                            if player_input.contains(Input::SHOOT) {
+                                if player.gun_clock == 0 {
+                                    let dir = if player.facing_right {
+                                        vec2(1.0, 0.0)
+                                    } else {
+                                        vec2(-1.0, 0.0)
+                                    };
+                                    self.bullets.push(Bullet {
+                                        pos: pos + vec2(4.0, 4.0) + dir * 8.0,
+                                        speed: dir * consts::BULLET_SPEED,
+                                        lived: 0.0,
+                                        lifetime: 0.7,
+                                    });
+                                }
+                                player.gun_clock += 1;
+                                player.gun_clock %= consts::BULLET_INTERVAL_TICKS;
+                            } else {
+                                player.gun_clock = 0;
+                            }
                         }
 
                         if player.speed.x < 0.0 {
@@ -329,21 +390,53 @@ impl Game {
                             player.speed.y += consts::GRAVITY * consts::TIMESTEP;
                         }
 
-                        self.world
+                        self.collision_world
                             .move_h(player.collider, player.speed.x * consts::TIMESTEP);
                         if !self
-                            .world
+                            .collision_world
                             .move_v(player.collider, player.speed.y * consts::TIMESTEP)
                         {
                             player.speed.y = 0.0;
                         }
 
                         // HACK: clear the position remainders that are not saved in the backroll state.
-                        self.world.set_actor_position(
+                        self.collision_world.set_actor_position(
                             player.collider,
-                            self.world.actor_pos(player.collider),
+                            self.collision_world.actor_pos(player.collider),
                         );
                     }
+
+                    {
+                        let _z = telemetry::ZoneGuard::new("update bullets");
+
+                        for bullet in &mut self.bullets {
+                            bullet.pos += bullet.speed * consts::TIMESTEP;
+                            bullet.lived += consts::TIMESTEP;
+                        }
+                        let explosions = &mut self.explosions;
+                        let collision_world = &mut self.collision_world;
+                        let players = &mut self.players;
+
+                        self.bullets.retain(|bullet| {
+                            if collision_world.solid_at(bullet.pos) {
+                                explosions.spawn(bullet.pos);
+                                return false;
+                            }
+                            for player in players.iter_mut() {
+                                let player_pos = collision_world.actor_pos(player.collider);
+                                if Rect::new(player_pos.x, player_pos.y, 8.0, 8.0)
+                                    .contains(bullet.pos)
+                                {
+                                    player.health -= 5;
+                                    explosions.spawn(bullet.pos);
+                                    return false;
+                                }
+                            }
+                            bullet.lived < bullet.lifetime
+                        });
+                    }
+
+                    self.players.retain(|player| player.health > 0);
                 }
                 Command::Event(Event::Connected(player_handle)) => {
                     info!("Remote player connected: {:?}", player_handle);
@@ -399,7 +492,7 @@ impl Game {
         }
 
         for player in &self.players {
-            let pos = self.world.actor_pos(player.collider);
+            let pos = self.collision_world.actor_pos(player.collider);
 
             if player.backroll_player_handle.0 != self.local_player.0 {
                 draw_text_ex(
@@ -414,6 +507,15 @@ impl Game {
                 );
             }
 
+            draw_rectangle(pos.x as f32 - 4.0, pos.y as f32 - 5.0, 16.0, 2.0, RED);
+            draw_rectangle(
+                pos.x as f32 - 4.0,
+                pos.y as f32 - 5.0,
+                player.health.clamp(0, 100) as f32 / 100.0 * 16.0,
+                2.0,
+                GREEN,
+            );
+
             if player.facing_right {
                 self.tiled_map.spr(
                     "tileset",
@@ -427,25 +529,22 @@ impl Game {
                     Rect::new(pos.x + 8.0, pos.y, -8.0, 8.0),
                 );
             }
-
-            if player.shooting {
-                if player.facing_right {
-                    self.bullet_emitter.config.initial_direction = vec2(1.0, 0.0);
-                } else {
-                    self.bullet_emitter.config.initial_direction = vec2(-1.0, 0.0);
-                }
-                self.bullet_emitter.emit(
-                    vec2(pos.x, pos.y) + vec2(8.0 * player.facing_right as u8 as f32, 4.0),
-                    1,
-                );
-            }
         }
 
         telemetry::end_zone();
 
-        telemetry::begin_zone("draw particles");
-        self.bullet_emitter.draw(vec2(0., 0.));
-        telemetry::end_zone();
+        for bullet in &self.bullets {
+            draw_circle(
+                bullet.pos.x,
+                bullet.pos.y,
+                1.0,
+                Color::new(1.0, 1.0, 0.8, 1.0),
+            );
+        }
+        {
+            let _z = telemetry::ZoneGuard::new("draw particles");
+            self.explosions.draw();
+        }
 
         set_default_camera();
     }
