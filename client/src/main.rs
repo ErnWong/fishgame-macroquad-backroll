@@ -229,7 +229,7 @@ impl Game {
         }
     }
 
-    async fn update(&mut self) {
+    fn update(&mut self) {
         telemetry::begin_zone("Main loop");
 
         telemetry::begin_zone("pre flush");
@@ -259,15 +259,11 @@ impl Game {
             telemetry::end_zone();
         }
 
-        self.draw();
-
         //profiler::profiler(profiler::ProfilerParams {
         //    fps_counter_pos: vec2(50.0, 20.0),
         //});
 
         telemetry::end_zone();
-
-        next_frame().await;
     }
 
     fn run_commands(&mut self, commands: Commands<BackrollConfig>) {
@@ -554,9 +550,17 @@ impl Game {
 async fn main() {
     let mut game = Game::new().await;
 
+    let mut seconds_behind = 0.0;
+
     loop {
-        // TODO: Run update() enough times to emulate a fixed timestep loop, or do some fancy
-        // multithreading.
-        game.update().await;
+        seconds_behind += get_frame_time();
+
+        while seconds_behind > 0.0 {
+            seconds_behind -= consts::TIMESTEP;
+            game.update();
+        }
+
+        game.draw();
+        next_frame().await;
     }
 }
