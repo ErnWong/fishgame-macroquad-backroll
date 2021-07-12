@@ -22,6 +22,8 @@ use std::net::{Ipv4Addr, SocketAddr};
 mod consts {
     use super::{Input, KeyCode};
     pub const TIMESTEP: f32 = 1.0 / 60.0;
+    pub const MAX_SIMULATION_LAG_SECONDS: f32 = 0.5;
+    pub const MAX_FRAMES_PER_VSYNC: usize = (MAX_SIMULATION_LAG_SECONDS / TIMESTEP) as usize;
     pub const GRAVITY: f32 = 900.0;
     pub const JUMP_SPEED: f32 = 250.0;
     pub const RUN_SPEED: f32 = 150.0;
@@ -555,7 +557,10 @@ async fn main() {
     loop {
         seconds_behind += get_frame_time();
 
-        while seconds_behind > 0.0 {
+        for _ in 0..consts::MAX_FRAMES_PER_VSYNC {
+            if seconds_behind <= 0.0 {
+                break;
+            }
             seconds_behind -= consts::TIMESTEP;
             game.update();
         }
